@@ -167,6 +167,43 @@ class WorkloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 setup.setup_sql(account, subject, "repo:example/demo:environment:prod")
 
+    def test_setup_manual_account_check_precedes_provisioning(self):
+        sql = setup.setup_sql("EXAMPLE-DEMO", "repo:example/demo:environment:qa",
+                              "repo:example/demo:environment:prod")
+        self.assertIn("'EXAMPLE-DEMO' AS EXPECTED_ACCOUNT", sql)
+        self.assertIn("AS ACTUAL_ACCOUNT", sql)
+        self.assertLess(sql.index("AS ACTUAL_ACCOUNT"), sql.index("USE ROLE"))
+        self.assertIn("does not automatically block later SQL", sql)
+        self.assertNotIn("wrong_account", sql)
+        self.assertNotIn("EXECUTE IMMEDIATE", sql)
+
+    def test_setup_sections_keep_raw_seed_separate_from_releases(self):
+        sql = setup.setup_sql("EXAMPLE-DEMO", "repo:example/demo:environment:qa",
+                              "repo:example/demo:environment:prod")
+        self.assertEqual(re.findall(r"^-- (\d{2}) -", sql, re.M),
+                         [f"{number:02d}" for number in range(9)])
+        self.assertEqual(sql.count("INSERT INTO PROMOTION_SOURCE.RAW.ORDERS"), 1)
+        self.assertLess(sql.index("-- 06 -"), sql.index("INSERT INTO"))
+        self.assertLess(sql.index("INSERT INTO"), sql.index("-- 07 -"))
+        self.assertIn("Promote SQL definitions, not QA data", sql)
+        self.assertNotIn("CREATE OR REPLACE PROCEDURE", sql)
+        self.assertNotIn("CREATE TASK", sql)
+        self.assertNotRegex(sql, r"(?m)^\s*EXECUTE TASK\b")
+
+    def test_local_setup_provisioning_matches_template_when_present(self):
+        path = ROOT / "local/setup.sql"
+        if not path.exists():
+            self.skipTest("optional ignored local setup is absent")
+        local = path.read_text()
+        subjects = re.findall(r"SUBJECT = '([^']+)'", local)
+        rendered = setup.setup_sql("EXAMPLE-DEMO", *subjects)
+        body = local[local.index("USE ROLE ACCOUNTADMIN;"):]
+        rendered = rendered[rendered.index("USE ROLE ACCOUNTADMIN;"):]
+        # Local setup may omit the display-only account check and blank lines.
+        normalize = lambda text: [line for line in text.splitlines() if line.strip()]
+        self.assertTrue(normalize(body) == normalize(rendered),
+                        "local setup differs from its template (values withheld)")
+
 
 class DeploymentTests(unittest.TestCase):
     def setUp(self):

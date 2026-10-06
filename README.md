@@ -1,67 +1,84 @@
 # SQL promotion from QA to production
 
-A small, synthetic example of versioning SQL definitions and releasing them through
-quality assurance (QA) into production (PROD). Continuous integration and delivery
-(CI/CD) means automated checks and a controlled release process in this example.
+Version a SQL procedure, scheduled task, and reporting view in Git, test a change
+in QA, and release the reviewed definitions to PROD through GitHub Actions.
 
-**Status: locally tested scaffold, not live-deployment certified.** No account
-deployment or GitHub run has been verified. See [validation](docs/validation.md)
-before enabling anything. This is a custom educational deployment driver, not a
-general-purpose database migration framework.
+The demo starts **after ingestion**: orders are already in RAW. A task calls a
+procedure that transforms those orders into clean tables and reporting output.
+QA and PROD are separate databases in one demo account. **Promote code, not QA
+data**: each environment processes the shared RAW input independently.
 
-All orders and amounts are invented. No real organization, account, or business
-process is represented. `PROD` here is a demonstration database in a disposable
-demo account, not a real production environment.
+This is an educational demo using invented data. Offline tests are available;
+end-to-end Snowflake deployment has not yet been validated.
 
-## The example
+## 1. What the demo does
 
-| Order | Status | Amount |
-|---|---|---:|
-| O100 | completed | 100.00 |
-| O200 | cancelled | 50.00 |
-| O300 | completed | 25.00 |
+```text
+PROMOTION_SOURCE.RAW.ORDERS          Already-ingested input (simulated by a seed)
+          |
+          +--> PROMOTION_QA         Test proposed SQL definitions
+          |
+          +--> PROMOTION_PROD       Run approved SQL definitions
 
-Baseline **v1** includes all orders: **3 orders, 175.00**. The proposed **v2**
-excludes cancelled orders: **2 orders, 125.00**. These are fixture expectations,
-not measured customer results or performance claims.
+Inside each environment:
+OPS.REFRESH_ORDERS_TASK
+          |
+          v
+SILVER.REFRESH_ORDERS                Procedure with a multi-statement transaction
+          |
+          +--> SILVER.ORDERS
+          +--> GOLD.SALES_SUMMARY --> GOLD.SALES_REPORT
+```
 
-The repository separates three things:
+The procedure refreshes both output tables, with an exception handler that rolls
+back and re-raises errors. The task definition calls it with the failure switch
+disabled. The demo's configured schedule is daily at 06:00 UTC; the deployment
+driver leaves QA suspended and resumes PROD only after validation.
 
-- **Definition:** the SQL text reviewed and versioned in Git.
-- **Deployment:** the driver submits those definitions to the selected environment.
-- **Execution:** the task calls the procedure to refresh the demo outputs.
+The change to test is small and visible:
 
-The procedure refreshes `SILVER.ORDERS` and `GOLD.SALES_SUMMARY` inside an explicit
-transaction. The reporting view is `GOLD.SALES_REPORT`. The scheduled task is
-`OPS.REFRESH_ORDERS_TASK`. `SILVER`, `GOLD`, and `OPS` are this demo's schema names
-for clean orders, reporting output, and operational objects.
+| Release | Business rule | Expected orders | Expected total |
+|---|---|---:|---:|
+| v1 | Include all orders | 3 | 175.00 |
+| v2 | Exclude cancelled orders | 2 | 125.00 |
 
-Snowflake's transaction reference states: "A transaction is a sequence of SQL
-statements that are committed or rolled back as a unit." It also states:
-"Each DDL statement executes as a separate transaction." DDL means Data Definition
-Language, the statements that define objects. **The procedure transaction is not
-an all-or-nothing release of the SQL definitions.**
-Source: [Transactions](https://docs.snowflake.com/en/sql-reference/transactions).
+RAW contains two completed orders worth 100.00 and 25.00, and one cancelled order
+worth 50.00. The v2 change affects the procedure and its expected results, not RAW.
 
-## Files to open first
+## 2. Repository structure
 
-- `pipelines/silver/orders.sql`: v1 procedure and its exception handler.
-- `pipelines/ops/task.sql`: scheduled procedure call; this file never enables it.
-- `pipelines/gold/sales_report.sql`: reporting view and explicit reader grant.
-- `release.json`: expected version, order identifiers, count, and total.
-- `examples/v2/`: only the changed procedure and expectations.
-- `ci/deploy.py`: deployment order, input checks, task verification, and release log.
-- `setup/setup.sql.j2`: one-time setup template, rendered by `setup/render.py`.
-- `.github/workflows/deploy.yml`: GitHub Actions workflow definition.
+```text
+.github/workflows/deploy.yml        Checks, QA deployment, and PROD release jobs
+setup/
+  setup.sql.j2                      Generic, numbered one-time setup template
+  render.py                         Fill setup placeholders locally
+fixtures/orders.json               Synthetic RAW input
+pipelines/
+  tables.sql                       Output tables and release log
+  silver/orders.sql                Transactional refresh procedure
+  gold/sales_report.sql             Reporting view and reader grant
+  ops/task.sql                     Cron-scheduled procedure call
+checks/results.sql                 Rows used by deployment validation
+release.json                       Expected version, order IDs, count, and total
+examples/v2/                       Replacement procedure and manifest for v2
+ci/deploy.sh                        Entry point: preview or execute a deployment
+ci/deploy.py                        Rendering, deployment, validation, release log
+sql/inspect.sql                    Compare QA/PROD outputs and inspect task history
+sql/stop_schedule.sql              Suspend the demo's production task
+tests/test_repo.py                 Offline tests with mocked Snowflake calls
+docs/adopt-existing.md             Bring existing SQL objects into version control
+docs/validation.md                 Detailed validation notes and live-test checklist
+local/setup.sql                    Your filled setup, if saved; ignored by Git
+```
 
-The `{{ database }}` and `{{ environment }}` markers are Jinja template variables.
-The local renderer substitutes `PROMOTION_QA`/`QA` or `PROMOTION_PROD`/`PROD` before
-submission. They are not literal SQL object names. `:run_token` in the procedure
-is the SQL binding of its local variable; it is deliberately not a template.
+The renderer replaces `{{ database }}` and `{{ environment }}` with the selected
+demo target. GitHub Actions checks out a commit and submits its rendered SQL
+through Snowflake CLI; this implementation does not use a Snowflake Git clone.
 
-## Start offline
+## 3. Local preparation
 
-From the repository root, install dependencies in a virtual environment:
+Use Python 3.11, Git, and a checkout of your own GitHub repository containing this
+demo. Run these commands from its root:
 
 ```bash
 python3 -m venv .venv
@@ -71,46 +88,47 @@ python -m unittest discover -s tests -v
 bash -n ci/deploy.sh
 ```
 
-Preview rendered definitions without connecting:
+Preview the QA definitions without connecting to Snowflake:
 
 ```bash
 bash ci/deploy.sh QA aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
 
-The repeated `a` value is a dummy commit identifier valid only for offline preview.
-The driver defaults to preview. `--execute` is the explicit account-write switch;
-execution also requires a clean checkout matching the requested real commit.
+The repeated `a` is a dummy commit ID for preview only. The driver does not write
+unless `--execute` is supplied. GitHub deployment jobs supply that flag and require
+a clean checkout of the requested commit.
 
-The tests use an in-memory mock instead of Snowflake. One test evaluates the
-portable order-selection query in SQLite, a local database engine. That does not
-validate Snowflake syntax, privileges, scheduling, or rollback semantics.
+## 4. Configure GitHub environments and Snowflake
 
-## Prepare a disposable demo account later
+You need repository administration access, an administrator for a disposable
+Snowflake demo account, and an approved way for the Actions runner to connect.
+The workflow installs Snowflake CLI on its runner; it is not needed for local
+rendering or offline tests.
 
-Do not run setup against a customer account or a real production namespace.
-Have an administrator review the rendered setup, privileges, authentication, and
-network policy first. This example does not modify network or authentication policies.
+### Create the GitHub environments first
 
-The setup intentionally uses `ACCOUNTADMIN` for one-time provisioning. It is not a
-least-privilege administrator runbook. Runtime identities use the dedicated
-`PROMOTION_DEPLOY_QA` and `PROMOTION_DEPLOY_PROD` roles. The setup creates the
-demo databases, schemas, source rows, warehouse, roles, and service users.
+In **Settings > Environments**, create:
 
-The setup is **one-shot**, not a rerunnable migration. It uses plain `CREATE`
-statements to fail on existing names instead of silently adopting objects.
-After a partial setup failure, inspect what exists and finish only the missing
-steps; do not blindly replay it. Source rows must be inserted exactly once.
+- **`qa`**: allow `main` and the intended pull-request deployment refs. Only trusted
+  same-repository contributors should have access to this deployment path.
+- **`prod`**: restrict deployments to `main`, configure a required reviewer, and
+  review administrator bypass settings. Use a separate reviewer if self-review is
+  disabled. Do not enable deployment without the intended approval protection.
 
-OpenID Connect (OIDC) supplies the workflow identity. The documented action behavior
-is: "When OIDC authentication is enabled, obtains a GitHub-issued OIDC token and
-sets the Snowflake workload identity environment variables for subsequent steps."
-The documentation also states: "When a job sets environment:, GitHub uses the
-environment form regardless of the trigger."
-Source: [Snowflake CLI GitHub Action](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action).
-CLI means command-line interface.
+Naming an environment in YAML is not the same as configuring its protection rules.
+Check feature availability for your repository in the
+[GitHub environment setup guide](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
 
-Render setup with an expected account and the **exact subject claim emitted by your
-repository** for each environment. These values are placeholders, not credentials:
+### Prepare the OIDC identities and setup file
+
+The workflow uses OpenID Connect (OIDC), with a separate service user for each
+environment. Snowflake's action documentation states: "The SUBJECT must match the
+claim GitHub emits for the workflow." Obtain the exact `qa` and `prod` subject
+values for **your repository**, including any subject customization; do not assume
+the illustrative values below match your repository. Never print or commit tokens.
+See the [OIDC setup reference](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action).
+
+Render setup after replacing these example values:
 
 ```bash
 python setup/render.py \
@@ -119,119 +137,146 @@ python setup/render.py \
   --prod-subject 'repo:example/sql-promotion-demo:environment:prod'
 ```
 
-The renderer writes SQL to the terminal only. Inspect it before executing it
-through an authorized administrator session. Confirm the account-identity check
-passes before continuing. If saving actual configuration, use the ignored `local/`
-directory and do not publish it. Do not put tokens in source files or commands.
+The command prints SQL only. Save the result as `local/setup.sql`, which is ignored
+by Git. Do not commit filled account configuration.
 
-## Configure GitHub later
+Open the rendered SQL in an administrator session connected explicitly to the
+intended demo account:
 
-Creating or publishing a remote repository is not part of the offline setup.
-When intentionally enabling the workflow:
+1. Run section **00** separately. Compare `ACTUAL_ACCOUNT` and `EXPECTED_ACCOUNT`;
+   this is a manual confirmation, not an automatic stop.
+2. Review and run sections **01-05** to provision the roles, warehouse, databases,
+   schemas, RAW table, grants, and workflow users. Setup uses `ACCOUNTADMIN`;
+   workflow jobs use `PROMOTION_DEPLOY_QA` or `PROMOTION_DEPLOY_PROD`.
+3. Run section **06** once to seed the synthetic RAW orders, then **07** to inspect
+   them. This seed represents ingestion; it is not an ingestion connector.
+4. Follow section **08** into the release walkthrough below. Setup does not deploy
+   the procedure, view, or task.
 
-1. Create GitHub environments named `qa` and `prod` before any deployment run.
-2. Configure required reviewers on `prod`, restrict its deployment branch to
-   `main`, and review bypass settings. Check that your GitHub plan supports those
-   protections for the chosen repository visibility. **If required reviewers are
-   unavailable, leave deployment disabled.**
-3. Allow the intended pull-request refs in `qa`; give repository write access only
-   to trusted contributors. Same-repository pull requests execute proposed code
-   with the QA identity. Fork pull requests run offline tests only.
-4. Set repository variables `SNOWFLAKE_ACCOUNT` (connection identifier) and
-   `EXPECTED_ACCOUNT` (uppercase organization-account value returned by the
-   setup account check). Do not hardcode real account information into public files.
-5. Keep `DEPLOY_ENABLED` unset or `false` until the live checks in
-   [validation](docs/validation.md) are authorized and scheduled. Set it to `true`
-   only when ready to allow account writes.
-6. After the first QA test pull request, protect `main`: require a pull request,
-   review, an up-to-date branch, and the `checks` and `qa-verified` status checks.
-   `qa-verified` deliberately fails when deployment was skipped.
+Setup is one-time-only. Stop on errors, inspect any partially created objects, and
+do not blindly replay it or insert the seed twice.
 
-GitHub states: "A job that references an environment must follow any protection
-rules for the environment before running or accessing the environment's secrets."
-Merely naming `environment: prod` in this workflow does not configure reviewers.
-Source: [Managing environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+### Configure repository variables and Actions
 
-The workflow reuses pinned action revisions from the source example and requests
-Snowflake CLI 3.17.1. Availability and behavior of those dependencies still need an
-actual GitHub run. The workflow renders the checked-out SQL locally; it does not
-require a second Git repository connection inside Snowflake.
+In **Settings > Secrets and variables > Actions > Variables**, add:
 
-## Run the demonstration after live validation
+| Repository variable | Value |
+|---|---|
+| `SNOWFLAKE_ACCOUNT` | Intended demo account connection identifier |
+| `EXPECTED_ACCOUNT` | Exact uppercase `ORGANIZATION-ACCOUNT` shown by setup |
+| `DEPLOY_ENABLED` | `false` initially; `true` when ready for the first live run |
 
-1. **Baseline:** release v1 from `main` using the manually started workflow,
-   inspect QA, and approve production. Both reporting views should show 175.00.
-2. **Show definitions:** open the procedure, task, and view files. Explain that
-   the release versions these files, not a copied QA dataset.
-3. **Change the rule:** on a new feature branch, copy the two files under
-   `examples/v2/` to their corresponding root paths. Review the diff: cancelled
-   orders are excluded, version labels change, and expected totals become 125.00.
-4. **Propose:** commit the change and open a pull request. Offline checks run,
-   then QA deployment and validation run when enabled. QA should show 125.00;
-   the previously released production version should still show 175.00.
-5. **Release:** merge. The merged commit is validated again in QA. Review that
-   run before approving production; production then uses the same commit.
-6. **Inspect:** production should show 125.00. `OPS.RELEASE_LOG` records the
-   validated commit, rules version, time, and deploying service user. GitHub's
-   run and approval records supply the human review context.
+Use repository-level variables for this walkthrough. The workflow already defines
+the service-user and role names, `id-token: write`, and `use-oidc: true`.
+It requests Snowflake CLI 3.17.1 and pins the action revisions. Ensure repository
+Actions policy permits those actions. No password or private-key secret is used
+by this OIDC configuration.
 
-Use `sql/inspect.sql` after a successful deployment to compare the environments.
-Use [existing-object adoption](docs/adopt-existing.md) to explain how an object
-created before Git can become a reviewed SQL file.
+Snowflake describes the action behavior as: "When OIDC authentication is enabled,
+obtains a GitHub-issued OIDC token and sets the Snowflake workload identity
+environment variables for subsequent steps."
+[Source](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action).
 
-### What the driver checks
+## 5. Run the demo: baseline, change, and promote
 
-It validates account/user/role context, suspends the existing task, waits for active
-runs to drain, submits files in dependency order, triggers a task run, and checks
-exact output rows and totals. QA then calls the same procedure with its demo
-failure switch enabled and requires both the expected exception and an unchanged
-output snapshot, including run tokens. These assertions are implemented but have
-not yet been demonstrated against Snowflake.
+### Release v1
 
-The driver records validation before enabling the production schedule. QA stays
-suspended. The proposed schedule is daily at 06:00 UTC (Coordinated Universal
-Time); this is a demo choice, not a product default.
+Confirm `main` contains the v1 procedure and `release.json`. Once setup, identities,
+runner access, and production approvals are ready, set `DEPLOY_ENABLED=true`.
+In **Actions > SQL promotion > Run workflow**, select **`main`**.
 
-The docs state: "Manually triggers an asynchronous single run of a task" and
-"A suspended root task is run without resuming the task" in the
-[EXECUTE TASK reference](https://docs.snowflake.com/en/sql-reference/sql/execute-task).
-The driver therefore polls for completion rather than equating submission with success.
+The run performs offline checks, deploys and validates QA, then waits for the
+configured production approval. Review QA before approving. After PROD succeeds,
+run `sql/inspect.sql` using an authorized demo session. Expect both reporting
+views to show **v1, 3 orders, 175.00**. Treat this first run as live validation,
+not as something established by the offline tests.
 
-### Failure, retry, and reset
+### Test the v2 change in QA
 
-- A failed release exits nonzero. It does not undo previously submitted definitions.
-  Inspect task history and current objects before retrying; do not enable the schedule
-  until the release is understood and verified. A timed-out task may still finish.
-- The release log records validation, not guaranteed schedule enablement. A resume
-  failure after logging is still a failed driver run.
-- For this fixed fixture, rerunning the procedure is intended to reproduce the same
-  business rows and total. It generates a new run token. Releasing again adds another
-  log entry. It is not a literal no-op.
-- Reset by reverting the v2 change in a new reviewed pull request, including both
-  the procedure and `release.json`. Expected outputs return to v1/175.00 through
-  the same QA and production flow. No automatic data recovery is promised.
-- After the demonstration, suspend the production task using the separately reviewed
-  command in `sql/stop_schedule.sql`. Turning off GitHub deployments does not execute
-  that command. Resource deletion is intentionally not automated.
+Create a feature branch and replace these two working files with their counterparts
+under `examples/v2/`:
 
-### Scope and limitations
+- `pipelines/silver/orders.sql`
+- `release.json`
 
-This is a single-presenter demo with shared QA. All runs, including production
-approval waits, share one workflow concurrency group. Finish or reject an outstanding
-release before starting another. Do not manually execute tasks or write demo output
-tables during validation. A pre-production check rejects a release when `main` has
-moved, but this is not a general release queue or a distributed lock.
+The procedure adds a filter excluding cancelled orders and changes its version
+labels to `v2`; the manifest expects `O100` and `O300`, totaling 125.00.
+Run the offline tests again, review the diff, commit only the intended changes,
+push the branch, and open a pull request to `main` in the same repository.
 
-Table files initialize a fixed schema; the driver does not implement table schema
-migrations, drift detection, backups, or automatic rollback. The workload fully
-refreshes only its synthetic output tables. Do not apply that refresh approach
-unmodified to real data. The shared fixture source is not an ingestion integration.
-The reader role is defined but assignment to human users is an administrator decision.
+The PR runs `checks`, `qa`, and `qa-verified`. After successful QA validation,
+`sql/inspect.sql` should show **QA v2 / 125.00** and **PROD v1 / 175.00**.
+Fork PRs do not deploy. `qa-verified` deliberately fails if QA was skipped, including
+when deployment is disabled; an offline-only run is not a QA release approval.
 
-## Before making a repository public
+After these status checks have appeared, protect `main` with required PR review
+and required `checks` and `qa-verified` statuses, including an up-to-date branch.
 
-Review every file and staged diff, including hidden files, history, workflow logs,
-generated setup, and screenshots. Keep actual account identifiers, identities,
-tokens, local paths, and private material out. `.gitignore` is a convenience, not
-a privacy guarantee. Decide licensing and organizational publication approval
-separately; this scaffold does not grant a license or authorize publication.
+### Promote to PROD
+
+Review and merge the PR. The main-branch workflow validates the merged commit in
+QA again, then requests production approval. Approve only after inspecting that
+run. PROD uses the same merged commit; a pre-deployment check rejects it if `main`
+has moved ahead.
+
+Inspect again: both environments should now show **v2, 2 orders, 125.00**.
+`OPS.RELEASE_LOG` records the validated commit, rules version, time, and deploying
+user. Finish or reject pending runs before starting another: this demo serializes
+the whole workflow, including approval waits, because QA is shared.
+
+### What gets tested
+
+- **Offline:** template rendering, fixture business rules, workflow guards, and
+  mocked deployment success/failure paths. These do not validate live privileges,
+  Snowflake compilation, or transaction behavior.
+- **During deployment:** exact order IDs, amounts, counts, total, rules version,
+  and a common run token after a successful task run.
+- **QA rollback test:** deliberately fail the procedure between output writes;
+  require the expected error and unchanged output rows and run tokens.
+
+The driver polls task history rather than treating submission as completion.
+Snowflake documents `EXECUTE TASK` as: "Manually triggers an asynchronous single
+run of a task" ([reference](https://docs.snowflake.com/en/sql-reference/sql/execute-task)).
+
+After the demo, run the reviewed `sql/stop_schedule.sql` against the intended demo
+account and set `DEPLOY_ENABLED=false`. The variable alone does not stop an already
+enabled task schedule. On release failure, inspect the job output and task history
+before retrying; the driver does not automatically undo deployed definitions.
+
+## 6. What this could look like in production
+
+Keep the same pattern: **versioned definitions -> QA tests -> reviewed release ->
+production verification**. Before adapting this demo, plan the following changes:
+
+- **Data separation:** replace the shared fixture with approved QA test data and a
+  production ingestion source. Parameterize source locations as well as targets.
+- **Access:** replace the broad administrator setup with an approved provisioning
+  process; scope each deployment identity to its environment and review runner
+  network access. Keep human reporting access separate from CI access.
+- **Migrations:** add reviewed schema-change scripts, dependency ordering, and
+  compatibility checks. This driver's table file only initializes a fixed schema.
+- **Workload design:** replace the fixture-specific full refresh and exact totals
+  with a processing strategy and data-quality checks suited to real volume.
+- **Release controls:** protect workflow changes, use independent approval, isolate
+  concurrent QA changes, and define how releases are queued and identified.
+- **Operations and recovery:** add failure alerts, ownership, cost limits, durable
+  deployment records, and tested roll-forward and data-recovery procedures.
+
+Do not confuse the procedure's data transaction with rollback of a whole release.
+Snowflake states: "Each DDL statement executes as a separate transaction."
+Therefore, the procedure's rollback handler does not undo earlier object-definition
+changes made by the deployment driver.
+[Transactions reference](https://docs.snowflake.com/en/sql-reference/transactions).
+
+For objects originally created outside Git, start with
+[Adopting existing objects](docs/adopt-existing.md). For the remaining live checks,
+see [Validation notes](docs/validation.md).
+
+## 7. Documentation resources
+
+- [Snowflake CLI GitHub Action](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action): action inputs, OIDC, service users, and subject matching.
+- [CI/CD with Snowflake CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/integrate-ci-cd): deployment stages and identity recommendations.
+- [Transactions](https://docs.snowflake.com/en/sql-reference/transactions): procedure transactions, error handling, and DDL boundaries.
+- [EXECUTE TASK](https://docs.snowflake.com/en/sql-reference/sql/execute-task): manual test runs and asynchronous execution.
+- [ALTER TASK](https://docs.snowflake.com/en/sql-reference/sql/alter-task): changing task definitions and schedules.
+- [GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments): reviewers, branch restrictions, and protection settings.

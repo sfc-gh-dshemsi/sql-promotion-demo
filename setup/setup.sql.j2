@@ -1,41 +1,66 @@
--- Review this rendered setup before running it in an empty demo namespace.
--- Intentionally uses administrator context for one-time provisioning.
+-- SQL promotion demo: one-time setup in a disposable demo account.
+-- Run section 00 separately and confirm the account before running later sections.
+-- Uses ACCOUNTADMIN for provisioning only; CI uses dedicated deployment roles.
+-- Plain CREATE is intentional: stop on existing names or any other error.
+-- This is not a rerunnable migration. Inspect partial setup before continuing.
+
+-- =============================================================================
+-- 00 - Confirm the target account (run separately)
+-- =============================================================================
+SELECT
+    CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() AS ACTUAL_ACCOUNT,
+    '{{ expected_account }}' AS EXPECTED_ACCOUNT;
+-- STOP: compare ACTUAL_ACCOUNT with EXPECTED_ACCOUNT before continuing.
+-- This SELECT displays the account; it does not automatically block later SQL.
+
 USE ROLE ACCOUNTADMIN;
 USE SECONDARY ROLES NONE;
-EXECUTE IMMEDIATE $$
-DECLARE
-    wrong_account EXCEPTION (-20002, 'Expected demo account does not match');
-BEGIN
-    IF (CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() <> '{{ expected_account }}') THEN
-        RAISE wrong_account;
-    END IF;
-END;
-$$;
 
-CREATE WAREHOUSE PROMOTION_WH
-    WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
-    INITIALLY_SUSPENDED = TRUE STATEMENT_TIMEOUT_IN_SECONDS = 180;
-USE WAREHOUSE PROMOTION_WH;
-CREATE DATABASE PROMOTION_SOURCE;
-CREATE SCHEMA PROMOTION_SOURCE.RAW;
-CREATE TABLE PROMOTION_SOURCE.RAW.ORDERS (
-    ORDER_ID VARCHAR NOT NULL, STATUS VARCHAR NOT NULL, AMOUNT NUMBER(12,2) NOT NULL
-);
-INSERT INTO PROMOTION_SOURCE.RAW.ORDERS (ORDER_ID, STATUS, AMOUNT) VALUES
-{% for order in orders %}
-    ('{{ order.order_id }}', '{{ order.status }}', {{ order.amount }}){{ ',' if not loop.last else ';' }}
-{% endfor %}
-
+-- =============================================================================
+-- 01 - Deployment and reader roles
+-- =============================================================================
 {% for environment in ['QA', 'PROD'] %}
 CREATE ROLE PROMOTION_DEPLOY_{{ environment }};
 CREATE ROLE PROMOTION_READER_{{ environment }};
 GRANT ROLE PROMOTION_DEPLOY_{{ environment }} TO ROLE SYSADMIN;
 GRANT ROLE PROMOTION_READER_{{ environment }} TO ROLE SYSADMIN;
+{% endfor %}
 
+-- =============================================================================
+-- 02 - Warehouse and QA / PROD databases
+-- =============================================================================
+CREATE WAREHOUSE PROMOTION_WH
+    WAREHOUSE_SIZE = XSMALL
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE
+    STATEMENT_TIMEOUT_IN_SECONDS = 180;
+USE WAREHOUSE PROMOTION_WH;
+{% for environment in ['QA', 'PROD'] %}
 CREATE DATABASE PROMOTION_{{ environment }};
 CREATE SCHEMA PROMOTION_{{ environment }}.SILVER;
 CREATE SCHEMA PROMOTION_{{ environment }}.GOLD;
 CREATE SCHEMA PROMOTION_{{ environment }}.OPS;
+{% endfor %}
+
+-- =============================================================================
+-- 03 - RAW landing table: the starting point for transformations
+-- =============================================================================
+-- This shared synthetic source represents data already delivered by ingestion.
+-- QA and PROD read it independently; neither reads the other's output tables.
+CREATE DATABASE PROMOTION_SOURCE;
+CREATE SCHEMA PROMOTION_SOURCE.RAW;
+CREATE TABLE PROMOTION_SOURCE.RAW.ORDERS (
+    ORDER_ID VARCHAR NOT NULL,
+    STATUS VARCHAR NOT NULL,
+    AMOUNT NUMBER(12,2) NOT NULL
+);
+
+-- =============================================================================
+-- 04 - Deployment, RAW read, and reporting access
+-- =============================================================================
+{% for environment in ['QA', 'PROD'] %}
+-- {{ environment }}
 GRANT USAGE ON DATABASE PROMOTION_{{ environment }} TO ROLE PROMOTION_DEPLOY_{{ environment }};
 {% for schema in ['SILVER', 'GOLD', 'OPS'] %}
 GRANT OWNERSHIP ON SCHEMA PROMOTION_{{ environment }}.{{ schema }}
@@ -50,7 +75,12 @@ GRANT SELECT ON TABLE PROMOTION_SOURCE.RAW.ORDERS TO ROLE PROMOTION_DEPLOY_{{ en
 GRANT USAGE ON DATABASE PROMOTION_{{ environment }} TO ROLE PROMOTION_READER_{{ environment }};
 GRANT USAGE ON SCHEMA PROMOTION_{{ environment }}.GOLD TO ROLE PROMOTION_READER_{{ environment }};
 GRANT USAGE ON WAREHOUSE PROMOTION_WH TO ROLE PROMOTION_READER_{{ environment }};
+{% endfor %}
 
+-- =============================================================================
+-- 05 - GitHub workflow service users
+-- =============================================================================
+{% for environment in ['QA', 'PROD'] %}
 CREATE USER PROMOTION_CI_{{ environment }}
     TYPE = SERVICE DEFAULT_ROLE = PUBLIC DEFAULT_SECONDARY_ROLES = ()
     WORKLOAD_IDENTITY = (
@@ -60,3 +90,32 @@ CREATE USER PROMOTION_CI_{{ environment }}
     );
 GRANT ROLE PROMOTION_DEPLOY_{{ environment }} TO USER PROMOTION_CI_{{ environment }};
 {% endfor %}
+
+-- =============================================================================
+-- 06 - Seed demo RAW input once (simulated ingestion, not a connector)
+-- =============================================================================
+-- Load once during setup, never during QA-to-PROD releases.
+-- Keep this fixed fixture for the demo's exact-result checks.
+INSERT INTO PROMOTION_SOURCE.RAW.ORDERS (ORDER_ID, STATUS, AMOUNT) VALUES
+{% for order in orders %}
+    ('{{ order.order_id }}', '{{ order.status }}', {{ order.amount }}){{ ',' if not loop.last else ';' }}
+{% endfor %}
+
+-- =============================================================================
+-- 07 - Inspect the starting data
+-- =============================================================================
+SELECT ORDER_ID, STATUS, AMOUNT
+FROM PROMOTION_SOURCE.RAW.ORDERS
+ORDER BY ORDER_ID;
+-- Expected synthetic input: 3 orders, total 175.00, including one cancelled order.
+
+-- =============================================================================
+-- 08 - Continue with the versioned QA-to-PROD release (not setup SQL)
+-- =============================================================================
+-- The release creates output tables, a transactional procedure, a reporting view,
+-- and a cron-scheduled task that calls the procedure. See pipelines/ and README.md.
+-- RAW -> procedure -> SILVER.ORDERS + GOLD.SALES_SUMMARY -> GOLD.SALES_REPORT.
+-- Test the changed definitions in QA, review, then approve the PROD release.
+-- Promote SQL definitions, not QA data. PROD transforms the shared RAW input itself.
+-- v1 includes all orders (175.00); examples/v2 excludes cancelled orders (125.00).
+-- Setup does not deploy transformations, execute tasks, or enable their schedules.
