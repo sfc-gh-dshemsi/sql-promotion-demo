@@ -34,34 +34,16 @@ tests/              Offline tests
 
 ## Setup (once)
 
+This walkthrough assumes the demo account has already been prepared using
+`setup/`. Account provisioning is separate from the release walkthrough below;
+no local Python setup or SQL rendering is included here.
+
 **1. Create the GitHub environments.** In **Settings > Environments**:
 
 - `qa`: no rules needed.
 - `prod`: add a required reviewer, and limit it to the `main` branch.
 
-**2. Render the Snowflake setup SQL.** Use your account and repository:
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-mkdir -p local
-
-python setup/render.py \
-  --qa-subject   'repo:OWNER/sql-promotion-demo:environment:qa' \
-  --prod-subject 'repo:OWNER/sql-promotion-demo:environment:prod' \
-  > local/setup.sql
-```
-
-**3. Run `local/setup.sql` as `ACCOUNTADMIN` in a demo account.**
-
-- Run section 00 by itself, and confirm the account it shows is the right one.
-- Then run sections 01–07, once.
-
-This creates the roles, warehouse, the QA and PROD databases, the RAW orders,
-and one CI service user per environment. Those users sign in with GitHub
-OIDC, so you need no passwords or keys.
-
-**4. Add repository settings.** In **Settings > Secrets and variables > Actions**:
+**2. Add repository settings.** In **Settings > Secrets and variables > Actions**:
 
 | Tab | Name | Value |
 |---|---|---|
