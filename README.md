@@ -50,6 +50,33 @@ no local Python setup or SQL rendering is included here.
 | Secrets | `SNOWFLAKE_ACCOUNT` | `myorg-myaccount` |
 | Variables | `DEPLOY_ENABLED` | `true` |
 
+**3. Allow GitHub Actions network access.** Run this once in your **demo account**
+after `setup/` has created the warehouse and CI users. This uses Snowflake's
+[managed GitHub Actions network rule](https://docs.snowflake.com/en/user-guide/tutorials/dbt-projects-on-snowflake-advanced-ci-cd-tutorial)
+and assigns the policy only to the two CI users, not the whole account.
+
+Before applying it, review any existing restrictions that must be preserved:
+a [user-level policy overrides the account policy](https://docs.snowflake.com/en/user-guide/network-policies#network-policy-precedence)
+and replaces any policy already assigned to that user. This example permits
+GitHub-hosted runner ranges, not just your repository.
+
+```sql
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE PROMOTION_WH;
+
+CREATE NETWORK POLICY PROMOTION_GITHUB_ACTIONS_POLICY
+  ALLOWED_NETWORK_RULE_LIST = (
+    'SNOWFLAKE.NETWORK_SECURITY.GITHUBACTIONS_GLOBAL'
+  )
+  COMMENT = 'GitHub Actions network access for SQL promotion demo CI users';
+
+ALTER USER PROMOTION_CI_QA
+  SET NETWORK_POLICY = PROMOTION_GITHUB_ACTIONS_POLICY;
+
+ALTER USER PROMOTION_CI_PROD
+  SET NETWORK_POLICY = PROMOTION_GITHUB_ACTIONS_POLICY;
+```
+
 ## Demo walkthrough
 
 **Step 1: Release v1.**
