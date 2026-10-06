@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.snowflake/
+.env
+.env.*
+!.env.example
+config.toml
+*.pem
+*.key
+*.p8
+local/
+output/
+*.log
+.DS_Store

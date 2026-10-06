@@ -1,0 +1,62 @@
+-- Review this rendered setup before running it in an empty demo namespace.
+-- Intentionally uses administrator context for one-time provisioning.
+USE ROLE ACCOUNTADMIN;
+USE SECONDARY ROLES NONE;
+EXECUTE IMMEDIATE $$
+DECLARE
+    wrong_account EXCEPTION (-20002, 'Expected demo account does not match');
+BEGIN
+    IF (CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() <> '{{ expected_account }}') THEN
+        RAISE wrong_account;
+    END IF;
+END;
+$$;
+
+CREATE WAREHOUSE PROMOTION_WH
+    WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE STATEMENT_TIMEOUT_IN_SECONDS = 180;
+USE WAREHOUSE PROMOTION_WH;
+CREATE DATABASE PROMOTION_SOURCE;
+CREATE SCHEMA PROMOTION_SOURCE.RAW;
+CREATE TABLE PROMOTION_SOURCE.RAW.ORDERS (
+    ORDER_ID VARCHAR NOT NULL, STATUS VARCHAR NOT NULL, AMOUNT NUMBER(12,2) NOT NULL
+);
+INSERT INTO PROMOTION_SOURCE.RAW.ORDERS (ORDER_ID, STATUS, AMOUNT) VALUES
+{% for order in orders %}
+    ('{{ order.order_id }}', '{{ order.status }}', {{ order.amount }}){{ ',' if not loop.last else ';' }}
+{% endfor %}
+
+{% for environment in ['QA', 'PROD'] %}
+CREATE ROLE PROMOTION_DEPLOY_{{ environment }};
+CREATE ROLE PROMOTION_READER_{{ environment }};
+GRANT ROLE PROMOTION_DEPLOY_{{ environment }} TO ROLE SYSADMIN;
+GRANT ROLE PROMOTION_READER_{{ environment }} TO ROLE SYSADMIN;
+
+CREATE DATABASE PROMOTION_{{ environment }};
+CREATE SCHEMA PROMOTION_{{ environment }}.SILVER;
+CREATE SCHEMA PROMOTION_{{ environment }}.GOLD;
+CREATE SCHEMA PROMOTION_{{ environment }}.OPS;
+GRANT USAGE ON DATABASE PROMOTION_{{ environment }} TO ROLE PROMOTION_DEPLOY_{{ environment }};
+{% for schema in ['SILVER', 'GOLD', 'OPS'] %}
+GRANT OWNERSHIP ON SCHEMA PROMOTION_{{ environment }}.{{ schema }}
+    TO ROLE PROMOTION_DEPLOY_{{ environment }} COPY CURRENT GRANTS;
+{% endfor %}
+GRANT USAGE ON WAREHOUSE PROMOTION_WH TO ROLE PROMOTION_DEPLOY_{{ environment }};
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE PROMOTION_DEPLOY_{{ environment }};
+GRANT USAGE ON DATABASE PROMOTION_SOURCE TO ROLE PROMOTION_DEPLOY_{{ environment }};
+GRANT USAGE ON SCHEMA PROMOTION_SOURCE.RAW TO ROLE PROMOTION_DEPLOY_{{ environment }};
+GRANT SELECT ON TABLE PROMOTION_SOURCE.RAW.ORDERS TO ROLE PROMOTION_DEPLOY_{{ environment }};
+
+GRANT USAGE ON DATABASE PROMOTION_{{ environment }} TO ROLE PROMOTION_READER_{{ environment }};
+GRANT USAGE ON SCHEMA PROMOTION_{{ environment }}.GOLD TO ROLE PROMOTION_READER_{{ environment }};
+GRANT USAGE ON WAREHOUSE PROMOTION_WH TO ROLE PROMOTION_READER_{{ environment }};
+
+CREATE USER PROMOTION_CI_{{ environment }}
+    TYPE = SERVICE DEFAULT_ROLE = PUBLIC DEFAULT_SECONDARY_ROLES = ()
+    WORKLOAD_IDENTITY = (
+        TYPE = OIDC
+        ISSUER = 'https://token.actions.githubusercontent.com'
+        SUBJECT = '{{ qa_subject if environment == "QA" else prod_subject }}'
+    );
+GRANT ROLE PROMOTION_DEPLOY_{{ environment }} TO USER PROMOTION_CI_{{ environment }};
+{% endfor %}

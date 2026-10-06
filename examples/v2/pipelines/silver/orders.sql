@@ -1,0 +1,38 @@
+CREATE OR REPLACE PROCEDURE {{ database }}.SILVER.REFRESH_ORDERS(P_FORCE_FAILURE BOOLEAN)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    injected_failure EXCEPTION (-20001, 'DEMO_INJECTED_FAILURE');
+    run_token VARCHAR DEFAULT UUID_STRING();
+BEGIN
+    BEGIN TRANSACTION;
+    BEGIN
+        DELETE FROM {{ database }}.GOLD.SALES_SUMMARY WHERE TRUE;
+        DELETE FROM {{ database }}.SILVER.ORDERS WHERE TRUE;
+
+        INSERT INTO {{ database }}.SILVER.ORDERS
+            (ORDER_ID, STATUS, AMOUNT, RULES_VERSION, RUN_TOKEN)
+        SELECT ORDER_ID, LOWER(TRIM(STATUS)), AMOUNT, 'v2', :run_token
+        FROM PROMOTION_SOURCE.RAW.ORDERS
+        WHERE LOWER(TRIM(STATUS)) <> 'cancelled';
+
+        IF (P_FORCE_FAILURE) THEN
+            RAISE injected_failure;
+        END IF;
+
+        INSERT INTO {{ database }}.GOLD.SALES_SUMMARY
+            (ORDER_COUNT, TOTAL_AMOUNT, RULES_VERSION, RUN_TOKEN)
+        SELECT COUNT(*), COALESCE(SUM(AMOUNT), 0), 'v2', :run_token
+        FROM {{ database }}.SILVER.ORDERS;
+        COMMIT;
+    EXCEPTION
+        WHEN OTHER THEN
+            ROLLBACK;
+            RAISE;
+    END;
+    RETURN 'v2 refresh committed';
+END;
+$$;
