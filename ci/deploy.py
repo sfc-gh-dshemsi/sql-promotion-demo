@@ -21,6 +21,25 @@ PIPELINE_FILES = (
 )
 
 
+def redact_diagnostic(text):
+    """Remove configured secrets and common credential forms from error text."""
+    for name, value in sorted(os.environ.items(), key=lambda item: len(item[1]), reverse=True):
+        if value and any(marker in name.upper() for marker in
+                         ("ACCOUNT", "TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY", "PASSPHRASE")):
+            text = text.replace(value, "[REDACTED]")
+            if "ACCOUNT" in name.upper():
+                pattern = re.escape(value).replace("_", "[-_]")
+                text = re.sub(pattern, "[REDACTED]", text, flags=re.IGNORECASE)
+    text = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+                  "[REDACTED]", text, flags=re.DOTALL)
+    text = re.sub(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+                  "[REDACTED]", text)
+    text = re.sub(r"(?i)(bearer\s+)\S+", r"\1[REDACTED]", text)
+    # Strip terminal controls, and prevent diagnostic lines becoming workflow commands.
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    return "\n".join("  " + line for line in text.splitlines())
+
+
 def validate_inputs(environment, commit):
     if environment not in ("QA", "PROD"):
         raise ValueError("environment must be QA or PROD")
@@ -184,7 +203,16 @@ def main():
             raise ValueError("execution requires a clean checkout of the requested commit")
         deploy(SnowCLI(args.environment), args.environment, args.commit)
         return 0
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    except subprocess.CalledProcessError as error:
+        print(f"FAIL: subprocess exited with code {error.returncode}.", file=sys.stderr)
+        diagnostic = error.stderr or error.stdout
+        if diagnostic:
+            print(redact_diagnostic(diagnostic), file=sys.stderr)
+        else:
+            print("  No diagnostic output was returned.", file=sys.stderr)
+        print("No automatic release rollback; inspect state before retrying.", file=sys.stderr)
+        return 1
+    except (ValueError, KeyError, OSError) as error:
         print(f"FAIL: {error}. No automatic release rollback; inspect state before retrying.", file=sys.stderr)
         return 1
 

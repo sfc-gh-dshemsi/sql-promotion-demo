@@ -282,6 +282,36 @@ class DeploymentTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         cli.run("SELECT 1", rows=True)
 
+    def test_failed_command_reports_redacted_diagnostic_without_command(self):
+        environment = {"SNOWFLAKE_ACCOUNT": "EXAMPLE-DEMO_TEST", "SNOWFLAKE_TOKEN": "private-token"}
+        for stderr, stdout, expected in (
+                ("Login failed EXAMPLE-DEMO_TEST example-demo-test private-token", "do not log results", "Login failed"),
+                ("", "Connection failed private-token", "Connection failed"),
+                ("", "", "No diagnostic output was returned")):
+            error = subprocess.CalledProcessError(1, ["snow", "sensitive-command"],
+                                                  output=stdout, stderr=stderr)
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch("sys.argv", ["deploy.py", "QA", COMMIT, "--execute"]), \
+                    patch.object(subprocess, "check_output", side_effect=[COMMIT, ""]), \
+                    patch.object(driver, "SnowCLI", side_effect=error), \
+                    patch("builtins.print") as output:
+                self.assertEqual(driver.main(), 1)
+            logged = "\n".join(str(call.args[0]) for call in output.call_args_list)
+            self.assertIn(expected, logged)
+            self.assertIn("code 1", logged)
+            for sensitive in (*environment.values(), "example-demo-test", "sensitive-command", "do not log results"):
+                self.assertNotIn(sensitive, logged)
+
+    def test_diagnostics_redact_credential_forms_and_prefix_lines(self):
+        diagnostic = ("Bearer unknown-credential\neyJheader.payload.signature\n"
+                      "-----BEGIN PRIVATE KEY-----\nprivate material\n-----END PRIVATE KEY-----\n"
+                      "\x1b[31m::warning::untrusted diagnostic\x1b[0m")
+        with patch.dict(os.environ, {}, clear=True):
+            redacted = driver.redact_diagnostic(diagnostic)
+        for sensitive in ("unknown-credential", "eyJheader", "private material", "\x1b"):
+            self.assertNotIn(sensitive, redacted)
+        self.assertTrue(all(line.startswith("  ") for line in redacted.splitlines()))
+
     def test_preflight_uses_single_account_setting(self):
         for account in ("EXAMPLE-DEMO_TEST", "example-demo_test", "example-demo-test"):
             environment = {"SNOWFLAKE_ACCOUNT": account,
