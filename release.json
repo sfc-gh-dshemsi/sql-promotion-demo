@@ -1,6 +1,6 @@
 {
-  "version": "v1",
-  "expected_total": "175.00",
-  "expected_count": 3,
-  "expected_order_ids": ["O100", "O200", "O300"]
+  "version": "v2",
+  "expected_total": "125.00",
+  "expected_count": 2,
+  "expected_order_ids": ["O100", "O300"]
 }

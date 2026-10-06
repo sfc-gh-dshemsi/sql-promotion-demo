@@ -15,8 +15,9 @@ BEGIN
 
         INSERT INTO {{ database }}.SILVER.ORDERS
             (ORDER_ID, STATUS, AMOUNT, RULES_VERSION, RUN_TOKEN)
-        SELECT ORDER_ID, LOWER(TRIM(STATUS)), AMOUNT, 'v1', :run_token
-        FROM PROMOTION_SOURCE.RAW.ORDERS;
+        SELECT ORDER_ID, LOWER(TRIM(STATUS)), AMOUNT, 'v2', :run_token
+        FROM PROMOTION_SOURCE.RAW.ORDERS
+        WHERE LOWER(TRIM(STATUS)) <> 'cancelled';
 
         IF (P_FORCE_FAILURE) THEN
             RAISE injected_failure;
@@ -24,7 +25,7 @@ BEGIN
 
         INSERT INTO {{ database }}.GOLD.SALES_SUMMARY
             (ORDER_COUNT, TOTAL_AMOUNT, RULES_VERSION, RUN_TOKEN)
-        SELECT COUNT(*), COALESCE(SUM(AMOUNT), 0), 'v1', :run_token
+        SELECT COUNT(*), COALESCE(SUM(AMOUNT), 0), 'v2', :run_token
         FROM {{ database }}.SILVER.ORDERS;
         COMMIT;
     EXCEPTION
@@ -32,6 +33,6 @@ BEGIN
             ROLLBACK;
             RAISE;
     END;
-    RETURN 'v1 refresh committed';
+    RETURN 'v2 refresh committed';
 END;
 $$;
