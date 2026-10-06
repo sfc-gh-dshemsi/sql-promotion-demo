@@ -151,7 +151,7 @@ class WorkloadTests(unittest.TestCase):
         self.assertIn(json.loads((ROOT / "release.json").read_text())["version"], ("v1", "v2"))
 
     def test_setup_has_two_environments_and_no_unresolved_templates(self):
-        sql = setup.setup_sql("EXAMPLE-DEMO", "repo:example/demo:environment:qa",
+        sql = setup.setup_sql("repo:example/demo:environment:qa",
                               "repo:example/demo:environment:prod")
         self.assertNotIn("{{", sql)
         self.assertNotIn("PROMOTION_DEV", sql)
@@ -162,15 +162,13 @@ class WorkloadTests(unittest.TestCase):
             self.assertIn(f"CREATE USER PROMOTION_CI_{environment}", sql)
 
     def test_setup_rejects_untrusted_identifiers(self):
-        for account, subject in (("bad'account", "repo:example/demo:environment:qa"),
-                                  ("EXAMPLE-DEMO", "repo:x/y:environment:qa'; DROP")):
+        for subject in ("repo:x/y:environment:qa'; DROP", "repo:example/demo:environment:prod"):
             with self.assertRaises(ValueError):
-                setup.setup_sql(account, subject, "repo:example/demo:environment:prod")
+                setup.setup_sql(subject, "repo:example/demo:environment:prod")
 
     def test_setup_manual_account_check_precedes_provisioning(self):
-        sql = setup.setup_sql("EXAMPLE-DEMO", "repo:example/demo:environment:qa",
+        sql = setup.setup_sql("repo:example/demo:environment:qa",
                               "repo:example/demo:environment:prod")
-        self.assertIn("'EXAMPLE-DEMO' AS EXPECTED_ACCOUNT", sql)
         self.assertIn("AS ACTUAL_ACCOUNT", sql)
         self.assertLess(sql.index("AS ACTUAL_ACCOUNT"), sql.index("USE ROLE"))
         self.assertIn("does not automatically block later SQL", sql)
@@ -178,7 +176,7 @@ class WorkloadTests(unittest.TestCase):
         self.assertNotIn("EXECUTE IMMEDIATE", sql)
 
     def test_setup_sections_keep_raw_seed_separate_from_releases(self):
-        sql = setup.setup_sql("EXAMPLE-DEMO", "repo:example/demo:environment:qa",
+        sql = setup.setup_sql("repo:example/demo:environment:qa",
                               "repo:example/demo:environment:prod")
         self.assertEqual(re.findall(r"^-- (\d{2}) -", sql, re.M),
                          [f"{number:02d}" for number in range(9)])
@@ -196,7 +194,7 @@ class WorkloadTests(unittest.TestCase):
             self.skipTest("optional ignored local setup is absent")
         local = path.read_text()
         subjects = re.findall(r"SUBJECT = '([^']+)'", local)
-        rendered = setup.setup_sql("EXAMPLE-DEMO", *subjects)
+        rendered = setup.setup_sql(*subjects)
         body = local[local.index("USE ROLE ACCOUNTADMIN;"):]
         rendered = rendered[rendered.index("USE ROLE ACCOUNTADMIN;"):]
         # Local setup may omit the display-only account check and blank lines.
@@ -257,7 +255,7 @@ class DeploymentTests(unittest.TestCase):
                 driver.SnowCLI("QA")
 
     def test_wrong_account_preflight_fails_before_writes(self):
-        environment = {"SNOWFLAKE_ACCOUNT": "EXAMPLE-DEMO", "EXPECTED_ACCOUNT": "EXAMPLE-DEMO",
+        environment = {"SNOWFLAKE_ACCOUNT": "EXAMPLE-DEMO",
                        "SNOWFLAKE_USER": "PROMOTION_CI_QA", "SNOWFLAKE_ROLE": "PROMOTION_DEPLOY_QA"}
         with patch.dict(os.environ, environment, clear=True):
             cli = driver.SnowCLI("QA")
@@ -267,7 +265,7 @@ class DeploymentTests(unittest.TestCase):
                 self.assertTrue(run.call_args.args[0].startswith("SELECT"))
 
     def test_cli_uses_explicit_context_and_parses_json(self):
-        environment = {"SNOWFLAKE_ACCOUNT": "EXAMPLE-DEMO", "EXPECTED_ACCOUNT": "EXAMPLE-DEMO",
+        environment = {"SNOWFLAKE_ACCOUNT": "EXAMPLE-DEMO",
                        "SNOWFLAKE_USER": "PROMOTION_CI_QA", "SNOWFLAKE_ROLE": "PROMOTION_DEPLOY_QA"}
         with patch.dict(os.environ, environment, clear=True):
             cli = driver.SnowCLI("QA")
@@ -283,6 +281,28 @@ class DeploymentTests(unittest.TestCase):
                 with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output, '')):
                     with self.assertRaises(ValueError):
                         cli.run("SELECT 1", rows=True)
+
+    def test_preflight_uses_single_account_setting(self):
+        for account in ("EXAMPLE-DEMO_TEST", "example-demo_test", "example-demo-test"):
+            environment = {"SNOWFLAKE_ACCOUNT": account,
+                           "SNOWFLAKE_USER": "PROMOTION_CI_QA",
+                           "SNOWFLAKE_ROLE": "PROMOTION_DEPLOY_QA"}
+            with patch.dict(os.environ, environment, clear=True):
+                cli = driver.SnowCLI("QA")
+                row = {"ACCOUNT": "EXAMPLE-DEMO_TEST", "ROLE": cli.role, "USER": cli.user}
+                with patch.object(cli, "run", return_value=[row]):
+                    cli.preflight()
+                for invalid in ([], [row, row], [{**row, "ACCOUNT": None}],
+                                [{**row, "ROLE": "OTHER"}], [{**row, "USER": "OTHER"}]):
+                    with patch.object(cli, "run", return_value=invalid):
+                        with self.assertRaises(ValueError):
+                            cli.preflight()
+
+    def test_account_configuration_rejects_unsupported_forms(self):
+        for account in ("", "locator123", "https://example-demo.snowflakecomputing.com", "bad';--"):
+            with patch.dict(os.environ, {"SNOWFLAKE_ACCOUNT": account}, clear=True):
+                with self.assertRaises(ValueError):
+                    driver.SnowCLI("QA")
 
     def test_execute_rejects_wrong_commit_and_dirty_checkout(self):
         for head, status in (("b" * 40, ""), (COMMIT, "?? extra.sql")):
@@ -343,6 +363,9 @@ class WorkflowTests(unittest.TestCase):
         for name in ("qa", "prod"):
             self.assertIn("vars.DEPLOY_ENABLED == 'true'", self.jobs[name]["if"])
             self.assertEqual(self.jobs[name]["environment"], name)
+            self.assertNotIn("EXPECTED_ACCOUNT", self.jobs[name]["env"])
+            self.assertEqual(self.jobs[name]["env"]["SNOWFLAKE_ACCOUNT"],
+                             "${{ vars.SNOWFLAKE_ACCOUNT }}")
 
     def test_untrusted_forks_never_receive_qa_identity(self):
         self.assertIn("head.repo.full_name == github.repository", self.jobs["qa"]["if"])

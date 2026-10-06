@@ -8,9 +8,8 @@
 -- 00 - Confirm the target account (run separately)
 -- =============================================================================
 SELECT
-    CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() AS ACTUAL_ACCOUNT,
-    '{{ expected_account }}' AS EXPECTED_ACCOUNT;
--- STOP: compare ACTUAL_ACCOUNT with EXPECTED_ACCOUNT before continuing.
+    CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() AS ACTUAL_ACCOUNT;
+-- STOP: confirm ACTUAL_ACCOUNT is your demo account before continuing.
 -- This SELECT displays the account; it does not automatically block later SQL.
 
 USE ROLE ACCOUNTADMIN;

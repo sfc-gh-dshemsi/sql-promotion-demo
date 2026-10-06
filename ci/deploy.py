@@ -68,11 +68,8 @@ class SnowCLI:
         self.role = f"PROMOTION_DEPLOY_{environment}"
         self.user = f"PROMOTION_CI_{environment}"
         self.account = os.environ.get("SNOWFLAKE_ACCOUNT", "")
-        self.expected_account = os.environ.get("EXPECTED_ACCOUNT", "")
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", self.account):
-            raise ValueError("set SNOWFLAKE_ACCOUNT to the intended account identifier")
-        if not re.fullmatch(r"[A-Z0-9_]+-[A-Z0-9_]+", self.expected_account):
-            raise ValueError("set EXPECTED_ACCOUNT to uppercase ORGANIZATION-ACCOUNT")
+        if not re.fullmatch(r"[A-Za-z0-9]+-[A-Za-z0-9_-]+", self.account):
+            raise ValueError("set SNOWFLAKE_ACCOUNT to the intended organization-account identifier")
         for key, expected in (("SNOWFLAKE_ROLE", self.role), ("SNOWFLAKE_USER", self.user)):
             if os.environ.get(key) != expected:
                 raise ValueError(f"{key} must equal {expected}")
@@ -93,7 +90,11 @@ class SnowCLI:
     def preflight(self):
         rows = self.run("SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() AS ACCOUNT, "
                         "CURRENT_ROLE() AS ROLE, CURRENT_USER() AS USER", rows=True)
-        if rows != [{"ACCOUNT": self.expected_account, "ROLE": self.role, "USER": self.user}]:
+        # Account-name underscores also have a hyphenated connection form.
+        normalize_account = lambda value: value.upper().replace("_", "-")
+        if (len(rows) != 1 or not isinstance(rows[0].get("ACCOUNT"), str)
+                or normalize_account(rows[0]["ACCOUNT"]) != normalize_account(self.account)
+                or rows[0].get("ROLE") != self.role or rows[0].get("USER") != self.user):
             raise ValueError("active account, role, or user differs from the explicit expected context")
 
 

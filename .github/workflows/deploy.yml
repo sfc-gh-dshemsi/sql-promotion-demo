@@ -46,7 +46,6 @@ jobs:
     env:
       DEPLOY_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-      EXPECTED_ACCOUNT: ${{ vars.EXPECTED_ACCOUNT }}
       SNOWFLAKE_USER: PROMOTION_CI_QA
       SNOWFLAKE_ROLE: PROMOTION_DEPLOY_QA
     steps:
@@ -89,7 +88,6 @@ jobs:
     env:
       DEPLOY_SHA: ${{ github.sha }}
       SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-      EXPECTED_ACCOUNT: ${{ vars.EXPECTED_ACCOUNT }}
       SNOWFLAKE_USER: PROMOTION_CI_PROD
       SNOWFLAKE_ROLE: PROMOTION_DEPLOY_PROD
     steps:
