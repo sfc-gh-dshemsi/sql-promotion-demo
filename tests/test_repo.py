@@ -364,8 +364,11 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("vars.DEPLOY_ENABLED == 'true'", self.jobs[name]["if"])
             self.assertEqual(self.jobs[name]["environment"], name)
             self.assertNotIn("EXPECTED_ACCOUNT", self.jobs[name]["env"])
+
+    def test_both_deployments_read_account_from_secret(self):
+        for name in ("qa", "prod"):
             self.assertEqual(self.jobs[name]["env"]["SNOWFLAKE_ACCOUNT"],
-                             "${{ vars.SNOWFLAKE_ACCOUNT }}")
+                             "${{ secrets.SNOWFLAKE_ACCOUNT }}")
 
     def test_untrusted_forks_never_receive_qa_identity(self):
         self.assertIn("head.repo.full_name == github.repository", self.jobs["qa"]["if"])

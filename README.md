@@ -61,12 +61,12 @@ This creates the roles, warehouse, the QA and PROD databases, the RAW orders,
 and one CI service user per environment. Those users sign in with GitHub
 OIDC, so you need no passwords or keys.
 
-**4. Add repository variables.** In **Settings > Secrets and variables > Actions > Variables**:
+**4. Add repository settings.** In **Settings > Secrets and variables > Actions**:
 
-| Variable | Value |
-|---|---|
-| `SNOWFLAKE_ACCOUNT` | `myorg-myaccount` |
-| `DEPLOY_ENABLED` | `true` |
+| Tab | Name | Value |
+|---|---|---|
+| Secrets | `SNOWFLAKE_ACCOUNT` | `myorg-myaccount` |
+| Variables | `DEPLOY_ENABLED` | `true` |
 
 ## Demo walkthrough
 
